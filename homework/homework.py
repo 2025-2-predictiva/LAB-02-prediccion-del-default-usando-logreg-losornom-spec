@@ -39,18 +39,18 @@
 #
 # Paso 1.
 # Realice la limpieza de los datasets:
-# - Renombre la columna "default payment next month" a "default".
-# - Remueva la columna "ID".
-# - Elimine los registros con informacion no disponible.
+# - Renombre la columna "default payment next month" a "default". (Ready)
+# - Remueva la columna "ID". (Ready)
+# - Elimine los registros con informacion no disponible. (Ready)
 # - Para la columna EDUCATION, valores > 4 indican niveles superiores
 #   de educación, agrupe estos valores en la categoría "others".
 #
-# Renombre la columna "default payment next month" a "default"
-# y remueva la columna "ID".
+# Renombre la columna "default payment next month" a "default" (Ready)
+# y remueva la columna "ID". (Ready)
 #
 #
 # Paso 2.
-# Divida los datasets en x_train, y_train, x_test, y_test.
+# Divida los datasets en x_train, y_train, x_test, y_test. (Ready)
 #
 #
 # Paso 3.
@@ -95,3 +95,182 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+
+
+
+# Se cargan las librerías necesarias y los datos
+
+import os
+import gzip
+import pandas as pd
+import numpy as np
+import pickle
+import json
+from sklearn.preprocessing import OneHotEncoder, MinMaxScaler, PolynomialFeatures
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.feature_selection import SelectKBest
+from sklearn.linear_model import LogisticRegression
+from sklearn.feature_selection import f_classif, mutual_info_classif
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, recall_score, f1_score, confusion_matrix
+
+
+dataTrain0 = pd.read_csv("../files/input/train_data.csv.zip",
+                         compression="zip")
+dataTest0 = pd.read_csv("../files/input/test_data.csv.zip",
+                         compression="zip")
+
+
+# Paso 1: Depurado de los datos
+
+def Debugger(Datos):
+    # Renombrar la columna "default payment next month"
+    Datos.rename({"default payment next month": "default"}, axis=1, inplace=True)
+    # Eliminar la columna "ID"
+    Datos.drop("ID", inplace=True, axis=1)
+    # Se elimina la categoria 0 de EDUCATION and MARRIAGE
+    Datos["EDUCATION"] = np.where(Datos["EDUCATION"] == 0, np.nan, Datos["EDUCATION"])
+    Datos["MARRIAGE"] = np.where(Datos["MARRIAGE"] == 0, np.nan, Datos["MARRIAGE"])
+    # Eliminar los registros con información no disponible
+    Datos.dropna(axis=0, inplace=True)
+    # Agrupación de EDUCATION
+    Datos["EDUCATION"] = np.where(Datos["EDUCATION"]>4, 4, Datos["EDUCATION"])
+    return Datos
+
+# Depurado de los datos
+dataTrain = Debugger(dataTrain0.copy())
+dataTest = Debugger(dataTest0.copy())
+
+
+# Paso 2: Division de los datos
+
+def DivData(Datos):
+    y = Datos["default"]
+    x = Datos.drop("default", axis=1)
+    return x, y
+
+x_train, y_train = DivData(dataTrain)
+x_test, y_test = DivData(dataTest)
+
+
+# Paso 3: Crear el pipeline
+
+Variables_Cat = x_train.select_dtypes(include = ["object"]).columns.tolist()
+Variables_Num = x_train.select_dtypes(exclude = ["object"]).columns.tolist()
+
+Transformador = ColumnTransformer([
+    ("categoricas", OneHotEncoder(handle_unknown="ignore", sparse_output=False), Variables_Cat),
+    ("numericas", MinMaxScaler(), Variables_Num)
+    ]
+)
+
+pipeline = Pipeline(
+    steps=[
+        ("tranformador", Transformador),
+        ("selector", SelectKBest()),
+        ("interacciones", PolynomialFeatures(include_bias=False)),
+        ("reglogis", LogisticRegression())
+    ]
+)
+
+
+# Paso 4: Optimizar los parametros del modelo
+
+param = {
+    "selector__k": list(range(1, len(Variables_Num)+len(Variables_Cat))),
+    "selector__score_func": [f_classif, mutual_info_classif],
+    "reglogis__C": [0.01, 0.1, 1, 10, 100],
+    "reglogis__penalty": ["l1", "l2"],
+    "reglogis__solver": ["liblinear", "saga"],
+    "interacciones__degree": [1, 2, 3]
+}
+
+gridSearch = GridSearchCV(
+    estimator=pipeline,
+    cv = 10,
+    param_grid= param,
+    scoring="balanced_accuracy",
+    n_jobs=-1
+    )
+
+
+gridSearch.fit(x_train, y_train)
+
+
+# Paso 5: Guardado del modelo
+
+os.makedirs("../files/models/", exist_ok=True)
+
+with gzip.open("../files/models/model.pkl.gz", "wb") as f:
+    pickle.dump(gridSearch, f)
+
+
+y_train_predic = gridSearch.predict(X=x_train)
+
+
+# Paso 6: Calculo de metricas
+
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, recall_score, f1_score
+
+y_train_predic = gridSearch.predict(X=x_train)
+y_test_predic = gridSearch.predict(X=x_test)
+
+def Metricas(y_true, y_fit, name):
+
+    return{
+        "type": "metrics",
+        "dataset": name,
+        "precision": accuracy_score(y_true=y_true, y_pred=y_fit),
+        "balanced_accuracy" : balanced_accuracy_score(y_true=y_true, y_pred=y_fit),
+        "recall": recall_score(y_true=y_true, y_pred=y_fit),
+        "f1_score": f1_score(y_true=y_true, y_pred=y_fit)
+    }
+
+Metrics = []
+
+Metrics.append(Metricas(y_true=y_train, y_fit=y_train_predic, name="train"))
+Metrics.append(Metricas(y_true=y_test, y_fit=y_test_predic, name="test"))
+
+
+
+# Paso 7: Calculo de la matriz de confusion
+
+def ConfusionMatrix(x, y, name):
+    y_true = y
+    y_predic = gridSearch.predict(X=x)
+    mat = confusion_matrix(y_true=y_true, y_pred=y_predic)
+    x1 = int(mat[0,0])
+    x2 = int(mat[1,1])
+
+    return {
+        "type": "cm_matrix",
+        "dataset": name,
+        "true_0": {"predicted_0": x1, "predicted_1": None},
+        "true_1": {"predicted_0": None, "predicted_1": x2}
+    }
+
+Metrics.append(ConfusionMatrix(x=x_train, y=y_train, name="train"))
+Metrics.append(ConfusionMatrix(x=x_test, y=y_test, name="test"))
+
+
+
+os.makedirs("../files/output/", exist_ok=True)
+
+with open("../files/output/metrics.json", "w", encoding="utf-8") as file:
+    for metric_dict in Metrics:
+        json_line = json.dumps(metric_dict)
+        file.write(json_line + "\n")
+
+
+
+
+
+
+
+
+
+
+
+
+
